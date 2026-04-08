@@ -16,36 +16,25 @@ builder.Services.AddIdentity<IdentityUser, IdentityRole>()
     .AddDefaultTokenProviders();
 
 var jwtSettings = builder.Configuration.GetSection("JwtSettings");
-var secretKey = jwtSettings["Key"];
-
+var secretKey = jwtSettings["SecretKey"];
 if (string.IsNullOrEmpty(secretKey))
 {
     throw new Exception("JWT Key is missing in configuration!");
 }
-
 var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey));
-
-builder.Services.AddAuthentication()
-.AddJwtBearer(options =>
-{
-    options.MapInboundClaims = false;
-    options.TokenValidationParameters = new TokenValidationParameters
-    {
-        ValidateIssuerSigningKey = true,
-        IssuerSigningKey = key,
-        ValidateIssuer = true,
-        ValidIssuer = jwtSettings["Issuer"],
-        ValidateAudience = true,
-        ValidAudience = jwtSettings["Audience"],
-        ClockSkew = TimeSpan.Zero,
-        RoleClaimType = "role",
-        NameClaimType = "sub"
-    };
-});
-
-builder.Services.AddAuthorization();
+int duration = int.Parse(jwtSettings["Duration"] ?? "24");
 
 var app = builder.Build();
+
+if (args.Contains("migrate"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    Console.WriteLine("Running database migrations...");
+    await db.Database.MigrateAsync();
+    Console.WriteLine("Migration completed.");
+    return;
+}
 
 app.MapPost("/auth/login", async (LoginRequest login, UserManager<IdentityUser> userManager) =>
 {
@@ -62,21 +51,18 @@ app.MapPost("/auth/login", async (LoginRequest login, UserManager<IdentityUser> 
         new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
     };
     foreach (var role in roles) claims.Add(new Claim("role", role));
-
+    
     var token = handler.CreateToken(new SecurityTokenDescriptor
     {
-        Issuer = jwtSettings["Issuer"],
-        Audience = jwtSettings["Audience"],
+        Issuer = "AuthService",
+        Audience = "AllServices",
         Subject = new ClaimsIdentity(claims),
-        Expires = DateTime.UtcNow.AddHours(24),
+        Expires = DateTime.UtcNow.AddHours(duration),
         SigningCredentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256)
     });
 
     return Results.Ok(new { accessToken = token });
 });
-
-app.UseAuthentication();
-app.UseAuthorization();
 
 app.Run();
 
